@@ -31,7 +31,7 @@ def main():
         "dpm_solver_3",
     ]
 
-    nfes = [5, 10, 20, 50]
+    nfes = [5, 10, 15, 20, 30, 50]
 
     for nfe in nfes:
         for method in methods:
