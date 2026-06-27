@@ -60,30 +60,35 @@ class DDPM(nn.Module):
         return x_i
 
 
-def ddpm_schedules(beta1: float, beta2: float, T: int) -> Dict[str, torch.Tensor]:
+def ddpm_schedules(beta1: float, beta2: float, T: int):
     """
-    Returns pre-computed schedules for DDPM sampling, training process.
+    alpha_bar[0] = 1
+    alpha_bar[t] = prod_{i=1}^t alpha_i
     """
-    assert beta1 < beta2 < 1.0, "beta1 and beta2 must be in (0, 1)"
+    assert beta1 < beta2 < 1.0
 
-    beta_t = (beta2 - beta1) * torch.arange(0, T + 1, dtype=torch.float32) / T + beta1
+    beta_t = torch.linspace(beta1, beta2, T + 1)
+    beta_t[0] = 0.0
+
+    alpha_t = 1.0 - beta_t
+    alphabar_t = torch.cumprod(alpha_t, dim=0)
+
     sqrt_beta_t = torch.sqrt(beta_t)
-    alpha_t = 1 - beta_t
-    log_alpha_t = torch.log(alpha_t)
-    alphabar_t = torch.cumsum(log_alpha_t, dim=0).exp()
-
     sqrtab = torch.sqrt(alphabar_t)
-    oneover_sqrta = 1 / torch.sqrt(alpha_t)
+    sqrtmab = torch.sqrt(1.0 - alphabar_t)
 
-    sqrtmab = torch.sqrt(1 - alphabar_t)
-    mab_over_sqrtmab_inv = (1 - alpha_t) / sqrtmab
+    oneover_sqrta = 1.0 / torch.sqrt(alpha_t)
+
+    mab_over_sqrtmab = torch.zeros_like(beta_t)
+    mab_over_sqrtmab[1:] = beta_t[1:] / sqrtmab[1:]
 
     return {
-        "alpha_t": alpha_t,  # \alpha_t
-        "oneover_sqrta": oneover_sqrta,  # 1/\sqrt{\alpha_t}
-        "sqrt_beta_t": sqrt_beta_t,  # \sqrt{\beta_t}
-        "alphabar_t": alphabar_t,  # \bar{\alpha_t}
-        "sqrtab": sqrtab,  # \sqrt{\bar{\alpha_t}}
-        "sqrtmab": sqrtmab,  # \sqrt{1-\bar{\alpha_t}}
-        "mab_over_sqrtmab": mab_over_sqrtmab_inv,  # (1-\alpha_t)/\sqrt{1-\bar{\alpha_t}}
+        "alpha_t": alpha_t,
+        "oneover_sqrta": oneover_sqrta,
+        "sqrt_beta_t": sqrt_beta_t,
+        "alphabar_t": alphabar_t,
+        "sqrtab": sqrtab,
+        "sqrtmab": sqrtmab,
+        "mab_over_sqrtmab": mab_over_sqrtmab,
     }
+
