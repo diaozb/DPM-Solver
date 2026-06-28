@@ -1,323 +1,338 @@
-# DPM-Solver Sampler on MNIST
+# DPM-Solver on MNIST
 
-This repository is based on the starter code from `cloneofsimo/minDiffusion` and extends it for Homework 4. The main goal is to implement and compare different deterministic samplers for diffusion models on MNIST:
+This repository implements **DPM-Solver-2** and **DPM-Solver-3** samplers from scratch based on the [`minDiffusion`](https://github.com/cloneofsimo/minDiffusion) starter code.
 
-* DDIM, which is equivalent to DPM-Solver-1
-* DPM-Solver-2
-* DPM-Solver-3
+The implementation is tested on the **MNIST** dataset and compared with **DDIM**, which is equivalent to **DPM-Solver-1** according to the DPM-Solver paper.
 
-The implementation uses the same trained DDPM noise prediction model for all samplers. Only the sampling algorithm is changed during comparison.
+Paper: [DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps](https://arxiv.org/abs/2206.00927)
 
-## Project Structure
+---
+
+## 1. Goal
+
+The homework requires implementing DPM-Solver samplers and testing them on MNIST.
+
+In this project, I implemented and compared:
+
+- **DDIM**, used as the baseline and equivalent to **DPM-Solver-1**
+- **DPM-Solver-2**
+- **DPM-Solver-3**
+
+All three samplers use the same trained MNIST diffusion model. Only the sampling algorithm is changed during comparison.
+
+---
+
+## 2. Repository Structure
 
 ```text
-DPM-Solver/
+.
+├── data/
+│   └── MNIST/
+│       └── raw/                  # MNIST raw files
 ├── mindiffusion/
 │   ├── ddpm.py
 │   ├── unet.py
-│   └── dpm_solver_sampler.py
-├── train_mnist_hw4.py
-├── compare_mnist_samplers.py
+│   └── dpm_solver_sampler.py     # DPM-Solver implementation
 ├── contents/
 │   └── hw4/
-│       ├── ddim_nfe_5.png
-│       ├── dpm_solver_2_nfe_5.png
-│       ├── dpm_solver_3_nfe_5.png
-│       └── ...
-└── checkpoints/
-    └── ddpm_mnist_32.pth
+│       ├── ddpm_train_epoch_xxx.png
+│       ├── ddim_nfe_xx.png
+│       ├── dpm_solver_2_nfe_xx.png
+│       └── dpm_solver_3_nfe_xx.png
+├── train_mnist_hw4.py
+├── compare_mnist_samplers.py
+├── requirements.txt
+└── README.md
 ```
 
-## Code Logic
+The trained `.pth` checkpoint is not included in this repository. Please train the model first before running the sampler comparison.
 
-### 1. DDPM Training
+---
 
-The training script is:
+## 3. Method
+
+DPM-Solver is a fast ODE solver for diffusion model sampling. It uses the probability flow ODE of diffusion models and exploits the semi-linear structure of the diffusion ODE.
+
+For VP-type diffusion models, the solver uses the half-log-SNR variable:
 
 ```text
-train_mnist_hw4.py
+lambda_t = log(alpha_t / sigma_t)
 ```
 
-This script trains a DDPM model on MNIST. The MNIST images are padded from 28×28 to 32×32 so that they are compatible with the U-Net architecture used in the starter code. The images are normalized from `[0, 1]` to `[-1, 1]`.
-
-The model uses:
+where
 
 ```text
-NaiveUnet(in_channels=1, out_channels=1, n_feat=64)
+alpha_t = sqrt(alpha_bar_t)
+sigma_t = sqrt(1 - alpha_bar_t)
 ```
 
-The diffusion process uses 1000 timesteps:
+Thus,
 
 ```text
-n_T = 1000
+lambda_t = log(alpha_t) - log(sigma_t)
 ```
 
-After training, the checkpoint is saved to:
+In the implementation, the DDPM noise schedule is reused to compute `alpha_t`, `sigma_t`, and `lambda_t`.
+
+---
+
+## 4. DDIM as DPM-Solver-1
+
+DDIM is used as the baseline sampler.
+
+According to the DPM-Solver paper, DDIM has the same update form as the first-order DPM-Solver. Therefore, in this project:
 
 ```text
-checkpoints/ddpm_mnist_32.pth
+DDIM = DPM-Solver-1
 ```
 
-This checkpoint is shared by all samplers in the comparison.
+This makes the comparison fair because DDIM, DPM-Solver-2, and DPM-Solver-3 use the same trained neural network and the same noise schedule.
 
-### 2. DDPM Schedule
+---
 
-The DDPM noise schedule is implemented in:
+## 5. DPM-Solver-2
+
+DPM-Solver-2 uses one intermediate midpoint evaluation in each solver step.
+
+For one step from time `s` to time `t`, it first computes a midpoint `m` and an intermediate state `u`:
 
 ```text
-mindiffusion/ddpm.py
+u = alpha_m / alpha_s * x_s - sigma_m * (exp(h / 2) - 1) * eps_theta(x_s, s)
 ```
 
-The schedule stores:
+Then it uses the model prediction at the midpoint to update the sample:
 
 ```text
-alpha_t
-alphabar_t
-sqrtab
-sqrtmab
-sqrt_beta_t
-oneover_sqrta
-mab_over_sqrtmab
+x_t = alpha_t / alpha_s * x_s - sigma_t * (exp(h) - 1) * eps_theta(u, m)
 ```
 
-The important detail is that:
+This gives a second-order approximation of the diffusion ODE solution.
 
-```text
-alphabar_t[0] = 1
-```
+---
 
-This makes the indexing cleaner for DPM-Solver, because the sampler can use timestep indices from `1` to `n_T` while treating timestep `0` as the clean data endpoint.
+## 6. DPM-Solver-3
 
-### 3. DPM-Solver Sampler
-
-The main sampler implementation is:
-
-```text
-mindiffusion/dpm_solver_sampler.py
-```
-
-The class `DPMSolverSampler` implements:
-
-```text
-dpm_solver_1_step
-dpm_solver_2_step
-dpm_solver_3_step
-sample
-```
-
-The sampler uses the half-log-SNR variable:
-
-```text
-lambda = log(alpha / sigma)
-```
-
-For the VP diffusion setting:
-
-```text
-alpha^2 + sigma^2 = 1
-```
-
-so alpha and sigma can be computed directly from lambda.
-
-The sampler first builds a lambda table from the trained DDPM schedule. During sampling, it uniformly splits the lambda interval and solves the diffusion ODE from the noisy endpoint to the clean endpoint.
-
-### 4. DDIM / DPM-Solver-1
-
-DDIM is implemented as the first-order DPM-Solver step:
-
-```text
-dpm_solver_1_step
-```
-
-It uses one model evaluation per solver step.
-
-### 5. DPM-Solver-2
-
-DPM-Solver-2 is implemented as a midpoint second-order solver:
-
-```text
-dpm_solver_2_step
-```
-
-Each step uses two model evaluations:
-
-1. Evaluate the noise model at the starting point.
-2. Estimate an intermediate midpoint.
-3. Evaluate the noise model at the midpoint.
-4. Use the midpoint prediction to update the sample.
-
-### 6. DPM-Solver-3
-
-DPM-Solver-3 is implemented in:
-
-```text
-dpm_solver_3_step
-```
-
-It uses two intermediate points with:
+DPM-Solver-3 uses two intermediate model evaluations with:
 
 ```text
 r1 = 1 / 3
 r2 = 2 / 3
 ```
 
-Each third-order step uses three model evaluations. When the requested NFE is not divisible by 3, the sampler uses as many third-order steps as possible and then uses a lower-order step for the remaining budget.
+It estimates higher-order changes of the noise prediction model and performs a third-order update.
 
-### 7. NFE Logic
+Each full DPM-Solver-3 step uses three model evaluations. When the total NFE is not divisible by 3, the remaining budget is filled by a first-order or second-order step.
 
-NFE means number of function evaluations, i.e. the number of calls to the noise prediction model.
+---
 
-The implemented order schedule is:
+## 7. How to Run
 
-```text
-DDIM / DPM-Solver-1:
-    one model evaluation per step
-
-DPM-Solver-2:
-    two model evaluations per second-order step
-
-DPM-Solver-3:
-    three model evaluations per third-order step
-```
-
-For example:
-
-```text
-NFE = 10
-
-DDIM:
-    10 first-order steps
-
-DPM-Solver-2:
-    5 second-order steps
-
-DPM-Solver-3:
-    3 third-order steps + 1 first-order step
-```
-
-This makes the comparison fair because all samplers use the same total number of model evaluations.
-
-## How to Run
-
-### 1. Install Dependencies
+### 7.1 Install Dependencies
 
 ```bash
-pip install torch torchvision tqdm matplotlib
+pip install -r requirements.txt
 ```
 
-### 2. Prepare MNIST
+### 7.2 Prepare MNIST
 
-MNIST should be placed under:
-
-```text
-data/MNIST/
-```
-
-If the raw MNIST files already exist in:
+The MNIST raw files should be placed under:
 
 ```text
 data/MNIST/raw/
 ```
 
-then the training script can directly use them.
+For example:
 
-### 3. Train the DDPM Model
+```text
+data/MNIST/raw/train-images-idx3-ubyte
+data/MNIST/raw/train-labels-idx1-ubyte
+data/MNIST/raw/t10k-images-idx3-ubyte
+data/MNIST/raw/t10k-labels-idx1-ubyte
+```
 
-Run:
+### 7.3 Train the MNIST Diffusion Model
 
 ```bash
 python train_mnist_hw4.py
 ```
 
-After training, the checkpoint will be saved as:
+This trains a DDPM-style diffusion model on MNIST.
 
-```text
-checkpoints/ddpm_mnist_32.pth
-```
-
-The training script also saves intermediate DDPM samples to:
+Training samples are saved to:
 
 ```text
 contents/hw4/
 ```
 
-These images are useful for checking whether the trained DDPM model is reasonable.
-
-### 4. Compare Samplers
-
-Run:
+### 7.4 Compare Samplers
 
 ```bash
 python compare_mnist_samplers.py
 ```
 
-This script loads:
+The script compares:
 
-```text
-checkpoints/ddpm_mnist_32.pth
-```
-
-and compares:
-
-```text
-ddim
-dpm_solver_2
-dpm_solver_3
-```
+- DDIM
+- DPM-Solver-2
+- DPM-Solver-3
 
 under different NFE values:
 
 ```text
-[5, 10, 15, 20, 30, 50]
+NFE = 5, 10, 15, 20, 30, 50
 ```
 
-For fair visual comparison, the script fixes the random seed before each sampling run so that different samplers start from the same initial noise.
-
-### 5. View Results
-
-The generated images are saved to:
+The generated samples are saved to:
 
 ```text
 contents/hw4/
 ```
 
-The output filenames follow this format:
+---
+
+## 8. Training Samples
+
+The following images show generated samples during DDPM training.
+
+| Epoch 0 | Epoch 5 | Epoch 10 |
+|---|---|---|
+| ![](contents/hw4/ddpm_train_epoch_000.png) | ![](contents/hw4/ddpm_train_epoch_005.png) | ![](contents/hw4/ddpm_train_epoch_010.png) |
+
+| Epoch 15 | Epoch 20 | Epoch 25 |
+|---|---|---|
+| ![](contents/hw4/ddpm_train_epoch_015.png) | ![](contents/hw4/ddpm_train_epoch_020.png) | ![](contents/hw4/ddpm_train_epoch_025.png) |
+
+| Epoch 29 |
+|---|
+| ![](contents/hw4/ddpm_train_epoch_029.png) |
+
+---
+
+## 9. Qualitative Comparison
+
+The following tables compare DDIM, DPM-Solver-2, and DPM-Solver-3 under different NFE values.
+
+NFE means **Number of Function Evaluations**, namely the number of neural network calls during sampling.
+
+---
+
+### NFE = 5
+
+| DDIM | DPM-Solver-2 | DPM-Solver-3 |
+|---|---|---|
+| ![](contents/hw4/ddim_nfe_5.png) | ![](contents/hw4/dpm_solver_2_nfe_5.png) | ![](contents/hw4/dpm_solver_3_nfe_5.png) |
+
+At extremely low NFE, the step size is very large. The generated samples are noisy, especially for DPM-Solver-3. This is likely caused by numerical instability when using a high-order solver with too few steps.
+
+---
+
+### NFE = 10
+
+| DDIM | DPM-Solver-2 | DPM-Solver-3 |
+|---|---|---|
+| ![](contents/hw4/ddim_nfe_10.png) | ![](contents/hw4/dpm_solver_2_nfe_10.png) | ![](contents/hw4/dpm_solver_3_nfe_10.png) |
+
+At NFE = 10, the samples become more recognizable. DPM-Solver-2 usually gives cleaner digit shapes than the extremely low-NFE setting.
+
+---
+
+### NFE = 15
+
+| DDIM | DPM-Solver-2 | DPM-Solver-3 |
+|---|---|---|
+| ![](contents/hw4/ddim_nfe_15.png) | ![](contents/hw4/dpm_solver_2_nfe_15.png) | ![](contents/hw4/dpm_solver_3_nfe_15.png) |
+
+At NFE = 15, the generated digits are more stable. Higher-order solvers benefit from using more function evaluations.
+
+---
+
+### NFE = 20
+
+| DDIM | DPM-Solver-2 | DPM-Solver-3 |
+|---|---|---|
+| ![](contents/hw4/ddim_nfe_20.png) | ![](contents/hw4/dpm_solver_2_nfe_20.png) | ![](contents/hw4/dpm_solver_3_nfe_20.png) |
+
+At NFE = 20, all methods can generate clear MNIST-like samples.
+
+---
+
+### NFE = 30
+
+| DDIM | DPM-Solver-2 | DPM-Solver-3 |
+|---|---|---|
+| ![](contents/hw4/ddim_nfe_30.png) | ![](contents/hw4/dpm_solver_2_nfe_30.png) | ![](contents/hw4/dpm_solver_3_nfe_30.png) |
+
+At NFE = 30, the visual quality improves further, and the difference between different samplers becomes smaller.
+
+---
+
+### NFE = 50
+
+| DDIM | DPM-Solver-2 | DPM-Solver-3 |
+|---|---|---|
+| ![](contents/hw4/ddim_nfe_50.png) | ![](contents/hw4/dpm_solver_2_nfe_50.png) | ![](contents/hw4/dpm_solver_3_nfe_50.png) |
+
+At NFE = 50, all samplers generate good samples. The qualitative difference is less obvious than in the low-NFE regime.
+
+---
+
+## 10. Discussion
+
+From the qualitative results, we can observe:
+
+1. All samplers generate better samples as NFE increases.
+2. DDIM works as a reasonable first-order baseline.
+3. DPM-Solver-2 is relatively stable in low-NFE and medium-NFE settings.
+4. DPM-Solver-3 can be unstable when NFE is extremely small, such as NFE = 5, because each solver step becomes too large.
+5. When NFE is large enough, the visual difference between DDIM, DPM-Solver-2, and DPM-Solver-3 becomes smaller.
+
+This project focuses on qualitative comparison, following the homework discussion. No FID or classifier-based quantitative metric is required.
+
+---
+
+## 11. NFE Counting
+
+For fair comparison, the total number of neural network evaluations is controlled.
+
+- DDIM uses one model evaluation per step.
+- DPM-Solver-2 uses two model evaluations per full second-order step.
+- DPM-Solver-3 uses three model evaluations per full third-order step.
+
+When the NFE budget is not divisible by the solver order, the remaining function evaluations are used by lower-order steps.
+
+For example:
 
 ```text
-{sampler_name}_nfe_{nfe}.png
+NFE = 10 for DPM-Solver-3
+= 3 + 3 + 3 + 1
 ```
 
-Examples:
+This ensures that all methods are compared under the same NFE budget.
 
-```text
-contents/hw4/ddim_nfe_10.png
-contents/hw4/dpm_solver_2_nfe_10.png
-contents/hw4/dpm_solver_3_nfe_10.png
-```
+---
 
-To view the results, open the PNG files in the `contents/hw4/` directory.
+## 12. Conclusion
 
-## Qualitative Results
+In this homework, I implemented DPM-Solver-2 and DPM-Solver-3 samplers from scratch and compared them with DDIM on MNIST.
 
-The comparison shows the following qualitative behavior.
+The results show that DPM-Solver can generate recognizable MNIST samples under small NFE values. DPM-Solver-2 is especially stable in this experiment. DPM-Solver-3 may become unstable when NFE is too small, but its results improve as the NFE budget increases.
 
-At very low NFE, especially NFE=5, the samplers are not equally stable. DDIM can still produce some recognizable digits, but the images are noisy. DPM-Solver-2 also produces noisy samples. DPM-Solver-3 can become unstable at this extremely low NFE because each solver step is very large.
+Overall, the implementation satisfies the homework requirement of implementing DPM-Solver samplers and qualitatively comparing them with DDIM under different NFE settings.
 
-At NFE=10, the generated digits become much clearer. DPM-Solver-2 produces cleaner and more recognizable samples than DDIM in this experiment. DPM-Solver-3 also improves significantly compared with its NFE=5 result, although it is not always visually better than DPM-Solver-2.
+---
 
-At NFE=20, NFE=30, and NFE=50, all three samplers generate recognizable MNIST digits. The gap between DDIM, DPM-Solver-2, and DPM-Solver-3 becomes smaller as NFE increases.
+## References
 
-Overall, DPM-Solver-2 gives the most stable qualitative result in this implementation, especially under medium NFE. DPM-Solver-3 is effective when the NFE is not too small, but it can be unstable at extremely low NFE. This is acceptable for the homework because the comparison is qualitative and the goal is to implement and analyze DPM-Solver-2 and DPM-Solver-3 rather than proving that they always outperform DDIM under every NFE.
+- Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, Jun Zhu.  
+  **DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps.**  
+  NeurIPS 2022.  
+  https://arxiv.org/abs/2206.00927
 
-## Notes
+- minDiffusion starter code:  
+  https://github.com/cloneofsimo/minDiffusion
 
-DPM-Solver is a training-free sampler. After the DDPM noise prediction model is trained, no additional model training is needed for DPM-Solver-2 or DPM-Solver-3. The sampler only changes the numerical method used to solve the diffusion ODE during generation.
+- DDPM paper:  
+  https://arxiv.org/abs/2006.11239
 
-Therefore, the workflow is:
-
-```text
-Train one DDPM model on MNIST.
-Load the same checkpoint.
-Use DDIM, DPM-Solver-2, and DPM-Solver-3 for sampling.
-Compare generated images under the same NFE.
-```
+- DDIM paper:  
+  https://arxiv.org/abs/2010.02502
